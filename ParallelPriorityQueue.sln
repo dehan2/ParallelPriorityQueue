@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.27703.2026
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ParallelPriorityQueue", "ParallelPriorityQueue\ParallelPriorityQueue.vcxproj", "{FF0E4EDB-E668-44E8-9603-71CD0B3CBBE6}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FF0E4EDB-E668-44E8-9603-71CD0B3CBBE6}.Debug|x64.ActiveCfg = Debug|x64
+		{FF0E4EDB-E668-44E8-9603-71CD0B3CBBE6}.Debug|x64.Build.0 = Debug|x64
+		{FF0E4EDB-E668-44E8-9603-71CD0B3CBBE6}.Release|x64.ActiveCfg = Release|x64
+		{FF0E4EDB-E668-44E8-9603-71CD0B3CBBE6}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {CBC93F73-3739-4027-A12E-1729217B304E}
+	EndGlobalSection
+EndGlobal
