@@ -2,23 +2,19 @@
 #include "ParallelHeapManager.cuh"
 
 #include <list>
-#include <thrust/device_vector.h>
+#include "ParallelHeapController.h"
 
 using namespace std;
 
 int main()
 {
-	ParallelHeapManager heapManager;
-	list<double> entities = { 100,101,102,103,104,105,106,107,108,109,110};
+	ParallelHeapController heapController;
+	list<double> entities = { 13, 56, 38, 49, 57, 99, 37, 53, 55, 17, 97, 92, 74, 44, 23, 34, 15, 73, 1, 72 };
+	heapController.request_push(entities);
 
-	for (auto& entity : entities)
-		heapManager.push(entity);
-
-	int index = 0;
-	while (!heapManager.empty())
+	for (int i = 0; i < entities.size(); i++)
 	{
-		double popped = heapManager.pop();
-		cout << "Heap[" << index << "]: " << popped << endl;
-		index++;
+		double minKey = heapController.request_pop();
+		cout << "Heap[" << i << "]: " << minKey << endl;
 	}
 }

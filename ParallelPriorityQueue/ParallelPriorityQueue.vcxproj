@@ -83,10 +83,13 @@
     <CudaCompile Include="ParallelHeapManager.cu" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="constForParallelHeap.h" />
+    <ClInclude Include="ParallelHeapController.h" />
     <ClInclude Include="ParallelHeapManager.cuh" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="mayn.cpp" />
+    <ClCompile Include="ParallelHeapController.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

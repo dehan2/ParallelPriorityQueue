@@ -1,12 +1,23 @@
 #include "ParallelHeapManager.cuh"
+#include "constForParallelHeap.h"
 #include <thrust/sort.h>
 #include <thrust/swap.h>
 
 
+////////////////////////////////////////////////////////////////////
+// TO DO 190306 - Refer this page, make it possible to use vector in kernel
+// https://gist.github.com/docwhite/843f17e33e4c1f2b531a14a4bdfe90ec
+////////////////////////////////////////////////////////////////////
+
+
 void ParallelHeapManager::push(const double& entity)
 {
-	int targetNodeIndex = m_heap.size() + m_insertUpdateBuffer.size();
-	m_insertUpdateBuffer.push_back(std::make_tuple(0, targetNodeIndex, entity));
+	int destinationIndex = m_heap.size() + m_insertUpdateBuffer_oddLevel.size()+ m_insertUpdateBuffer_evenLevel.size();
+	InsertItem item;
+	item.currNode = 0;
+	item.destination = destinationIndex;
+	item.entity = entity;
+	m_insertUpdateBuffer_evenLevel.push_back(item);
 }
 
 
@@ -14,103 +25,189 @@ void ParallelHeapManager::push(const double& entity)
 double ParallelHeapManager::pop()
 {
 	double topEntity = m_heap.front();
-	bool* isGoingLeft_device;
-	double* entity_device;
-	cudaMalloc((void**)&isGoingLeft_device, sizeof(bool));
-	cudaMalloc((void**)&entity_device, sizeof(double));
-	initiate_delete_update <<<1, 1 >>> (isGoingLeft, entity);
-
-	bool isGoingLeft;
-	double entity;
-	cudaMemcpy(&isGoingLeft, isGoingLeft_device, sizeof(bool), cudaMemcpyDeviceToHost);
-	cudaMemcpy(&entity, entity_device, sizeof(double), cudaMemcpyDeviceToHost);
-
-	cudaFree(isGoingLeft_device);
-	cudaFree(entity_device);
-
-	if (isGoingLeft)
-		m_deleteUpdateBuffer.push_back(std::make_pair(1, entity));
-	else
-		m_deleteUpdateBuffer.push_back(std::make_pair(2, entity));
-
+	fetch_last_entity<<<1, 1 >>>(m_heap, m_deleteUpdateBuffer_evenLevel);
+	cudaDeviceSynchronize();
 	return topEntity;
 }
 
 
 
-
-
-
-
-
-int ParallelHeapManager::reassign_items_for_current_and_child_nodes(int index)
+void ParallelHeapManager::initiate_delete_update(const bool& isOdd)
 {
-	if ((2 * index + 1) < m_heap.size() && (2 * index + 2) < m_heap.size())
+	if (isOdd)
 	{
-		//Current node have both child
-
-		device_vector<double> buffer;
-		buffer.push_back(m_heap[index]);
-		buffer.push_back(m_heap[2 * index + 1]);
-		buffer.push_back(m_heap[2 * index + 2]);
-
-		sort(buffer.begin(), buffer.end());
-
-		int reassignResult = -1;		//		-1: heap property satisfied /  else: index for next update node
-		int newIndex = 0;
-
-		m_heap[index] = buffer[0];
-		if (m_heap[2 * index + 1] < m_heap[2 * index + 2])
+		if (!m_deleteUpdateBuffer_oddLevel.empty())
 		{
-			m_heap[2 * index + 1] = buffer[2];
-			m_heap[2 * index + 2] = buffer[1];
-			newIndex = 2 * index + 1;
+			delete_update <<<N, N >>> (m_heap, m_deleteUpdateBuffer_oddLevel, m_deleteUpdateBuffer_evenLevel);
+			cudaDeviceSynchronize();
+			m_deleteUpdateBuffer_oddLevel.clear();
 		}
-		else
-		{
-			m_heap[2 * index + 1] = buffer[1];
-			m_heap[2 * index + 2] = buffer[2];
-			newIndex = 2 * index + 2;
-		}
-
-		//check heap property
-		if (m_heap[newIndex] <= m_heap[2 * newIndex + 1]
-			&& m_heap[newIndex] <= m_heap[2 * newIndex + 2])
-		{
-			reassignResult = -1;
-		}
-		else
-		{
-			reassignResult = newIndex;
-		}
-
-		return reassignResult;
-	}
-	else if ((2 * index + 1) < m_heap.size())
-	{
-		//Current node have left child only
-		if (m_heap[index] > m_heap[2 * index + 1])
-			swap(m_heap[index], m_heap[2 * index + 1]);
-		
-		return -1;
 	}
 	else
 	{
-		//Current node have no child
-		return -1;
+		if (!m_deleteUpdateBuffer_evenLevel.empty())
+		{
+			delete_update <<<N, N >>> (m_heap, m_deleteUpdateBuffer_evenLevel, m_deleteUpdateBuffer_oddLevel);
+			cudaDeviceSynchronize();
+			m_deleteUpdateBuffer_evenLevel.clear();
+		}
 	}
 }
 
 
 
-int ParallelHeapManager::calculate_node_level(int nodeIndex)
+void ParallelHeapManager::initiate_insert_update(const bool& isOdd)
+{
+	if (isOdd)
+	{
+		if (!m_insertUpdateBuffer_oddLevel.empty())
+		{
+			insert_update <<<N, N >>> (m_heap, m_insertUpdateBuffer_oddLevel, m_insertUpdateBuffer_evenLevel);
+			cudaDeviceSynchronize();
+			m_insertUpdateBuffer_oddLevel.clear();
+		}
+	}
+	else
+	{
+		if (!m_insertUpdateBuffer_evenLevel.empty())
+		{
+			insert_update << <N, N >> > (m_heap, m_insertUpdateBuffer_evenLevel, m_insertUpdateBuffer_oddLevel);
+			cudaDeviceSynchronize();
+			m_insertUpdateBuffer_evenLevel.clear();
+		}
+	}
+}
+
+
+
+__global__ void fetch_last_entity(device_vector<double>& heap, device_vector<int>& deleteUpdateBuffer_evenLevel)
+{
+	if (heap.size() > 1)
+	{
+		deleteUpdateBuffer_evenLevel.push_back(0);
+		heap.front() == heap.back();
+		heap.pop_back();
+	}
+	else
+	{
+		//Do nothing
+	}
+}
+
+
+
+__global__ void delete_update(device_vector<double>& heap, device_vector<int>& deleteUpdateBuffer_currentLevel, device_vector<int>& deleteUpdateBuffer_nextLevel)
+{
+	int tid = threadIdx.x + blockIdx.x*blockDim.x;
+	while (tid < deleteUpdateBuffer_currentLevel.size())
+	{
+		int currIndex = deleteUpdateBuffer_currentLevel[tid];
+		if (currIndex < heap.size())
+		{
+			int leftIndex = 2 * currIndex + 1;
+			int rightIndex = 2 * currIndex + 2;
+			if (leftIndex < heap.size())
+			{
+				if (rightIndex < heap.size())
+				{
+					//All three nodes exist.
+					device_vector<double> buffer;
+					buffer.push_back(heap[currIndex]);
+					buffer.push_back(heap[leftIndex]);
+					buffer.push_back(heap[rightIndex]);
+
+					sort(buffer.begin(), buffer.end());
+
+					heap[currIndex] = buffer[0];
+					if (heap[leftIndex] < heap[rightIndex])
+					{
+						heap[leftIndex] = buffer[2];
+						heap[rightIndex] = buffer[1];
+						deleteUpdateBuffer_nextLevel.push_back(leftIndex);
+					}
+					else
+					{
+						heap[leftIndex] = buffer[1];
+						heap[rightIndex] = buffer[2];
+						deleteUpdateBuffer_nextLevel.push_back(rightIndex);
+					}
+				}
+				else
+				{
+					//Only left node exists.
+					if (heap[currIndex] > heap[leftIndex])
+					{
+						swap(heap[currIndex], heap[leftIndex]);
+					}
+				}
+			}
+			else
+			{
+				//Only current node exists.
+				//Do nothing
+			}
+		}
+		tid += N;
+	}
+}
+
+
+
+__global__ void insert_update(device_vector<double>& heap, 
+	device_vector<InsertItem>& insertUpdateBuffer_currentLevel,
+	device_vector<InsertItem>& insertUpdateBuffer_nextLevel)
+{
+	int tid = threadIdx.x + blockIdx.x*blockDim.x;
+	while (tid < insertUpdateBuffer_currentLevel.size())
+	{
+		InsertItem currItem = insertUpdateBuffer_currentLevel[tid];
+
+		if (currItem.currNode == currItem.destination)
+		{
+			if (heap.size() <= currItem.destination)
+				heap.resize(currItem.destination + 1);
+
+			heap[currItem.destination] = currItem.entity;
+		}
+		else
+		{
+			double entityForNextLevel = currItem.entity;
+			if (heap[currItem.currNode] > entityForNextLevel)
+			{
+				entityForNextLevel = heap[currItem.currNode];
+				heap[currItem.currNode] = currItem.entity;
+			}
+
+			int levelOfTargetNode = calculate_node_level(currItem.destination);
+			int levelOfCurrNode = calculate_node_level(currItem.currNode);
+			bool goLeft = is_index_bit_in_number_zero(currItem.destination + 1, (levelOfTargetNode - levelOfCurrNode));
+			
+			InsertItem nextItem;
+			nextItem.destination = currItem.destination;
+			nextItem.entity = entityForNextLevel;
+			if (goLeft)
+				nextItem.currNode = 2 * currItem.currNode + 1;
+			else
+				nextItem.currNode = 2 * currItem.currNode + 2;
+
+			insertUpdateBuffer_nextLevel.push_back(nextItem);
+		}
+		tid += N;
+	}
+}
+
+
+
+__device__ int calculate_node_level(int nodeIndex)
 {
 	int level = 1;
 	int maxLevelIndex = 0;
+	int powerOfTwo = 1;
 
 	while (nodeIndex > maxLevelIndex)
 	{
-		maxLevelIndex += pow(2, level);
+		powerOfTwo *= 2;
+		maxLevelIndex += powerOfTwo;
 		level++;
 	}
 
@@ -119,168 +216,9 @@ int ParallelHeapManager::calculate_node_level(int nodeIndex)
 
 
 
-bool ParallelHeapManager::is_index_bit_in_number_zero(int number, int index)
+__device__ bool is_index_bit_in_number_zero(int number, int index)
 {
 	int translatedNum = number >> (index - 1);
 	int result = translatedNum % 2;
 	return result == 0;
-}
-
-//Frontline 190302 - Äí´Ù¾î·Á¿ý
-__global__ void initiate_delete_update(device_vector<double>& heap, int* updateResult, double* entity)
-{
-	device_vector<double>::iterator itForLastElement = --heap.end();
-	heap.front() = *itForLastElement;
-	heap.erase(itForLastElement);
-
-	device_vector<double> sortingBuffer;
-	sortingBuffer.push_back(heap[0]);
-	sortingBuffer.push_back(heap[1]);
-	sortingBuffer.push_back(heap[2]);
-
-	sort(sortingBuffer.begin(), sortingBuffer.end());
-	heap.front() = sortingBuffer[0];
-	if ((2 * index + 1) < m_heap.size() && (2 * index + 2) < m_heap.size())
-	{
-		//Current node have both child
-
-		device_vector<double> buffer;
-		buffer.push_back(m_heap[index]);
-		buffer.push_back(m_heap[2 * index + 1]);
-		buffer.push_back(m_heap[2 * index + 2]);
-
-		sort(buffer.begin(), buffer.end());
-
-		int reassignResult = -1;		//		-1: heap property satisfied /  else: index for next update node
-		int newIndex = 0;
-
-		m_heap[index] = buffer[0];
-		if (m_heap[2 * index + 1] < m_heap[2 * index + 2])
-		{
-			m_heap[2 * index + 1] = buffer[2];
-			m_heap[2 * index + 2] = buffer[1];
-			newIndex = 2 * index + 1;
-		}
-		else
-		{
-			m_heap[2 * index + 1] = buffer[1];
-			m_heap[2 * index + 2] = buffer[2];
-			newIndex = 2 * index + 2;
-		}
-
-		//check heap property
-		if (m_heap[newIndex] <= m_heap[2 * newIndex + 1]
-			&& m_heap[newIndex] <= m_heap[2 * newIndex + 2])
-		{
-			reassignResult = -1;
-		}
-		else
-		{
-			reassignResult = newIndex;
-		}
-
-		return reassignResult;
-	}
-	else if ((2 * index + 1) < m_heap.size())
-	{
-		//Current node have left child only
-		if (m_heap[index] > m_heap[2 * index + 1])
-			swap(m_heap[index], m_heap[2 * index + 1]);
-
-		return -1;
-	}
-	else
-	{
-		//Current node have no child
-		return -1;
-	}
-
-
-	m_nodesForDeleteUpdate.push_back(0);
-	while (!m_nodesForDeleteUpdate.empty())
-	{
-		int reassignResult = reassign_items_for_current_and_child_nodes(m_nodesForDeleteUpdate.front());
-		m_nodesForDeleteUpdate.erase(m_nodesForDeleteUpdate.begin());
-		if (reassignResult != -1)
-			m_nodesForDeleteUpdate.push_back(reassignResult);
-	}
-
-	return minKey;
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-__global__ void ParallelHeap::push(device_vector<double>& heap, const double& entity)
-{
-	ParallelHeap::insert_update<<<1, 1 >>> (entity);
-
-
-	device_vector<int> nodesForInsertUpdate;
-	__device__ double 
-
-
-	m_entitiesToInsert.push_back(entity);
-	m_nodesForInsertUpdate.push_back(0);
-	int targetNodeIndex = m_heap.size();
-	int levelOfTargetNode = calculate_node_level(targetNodeIndex);
-
-	while (!m_nodesForInsertUpdate.empty())
-	{
-		int currNodeIndex = m_nodesForInsertUpdate.front();
-		if (targetNodeIndex == currNodeIndex)
-		{
-			m_heap.push_back(m_entitiesToInsert.front());
-		}
-		else
-		{
-			m_entitiesToInsert.push_back(m_heap[currNodeIndex]);
-			sort(m_entitiesToInsert.begin(), m_entitiesToInsert.end());
-			m_heap[currNodeIndex] = m_entitiesToInsert.front();
-			int levelOfCurrNode = calculate_node_level(currNodeIndex);
-			bool goLeft = is_index_bit_in_number_zero(targetNodeIndex + 1, (levelOfTargetNode - levelOfCurrNode));
-			if (goLeft)
-				m_nodesForInsertUpdate.push_back(2 * currNodeIndex + 1);
-			else
-				m_nodesForInsertUpdate.push_back(2 * currNodeIndex + 2);
-		}
-		m_entitiesToInsert.erase(m_entitiesToInsert.begin());
-		m_nodesForInsertUpdate.erase(m_nodesForInsertUpdate.begin());
-	}
-}
-
-
-
-__global__ void ParallelHeap::pop(device_vector<double>& heap, double* result)
-{
-	double minKey = m_heap.front();
-	device_vector<double>::iterator itForLastElement = --m_heap.end();
-	m_heap.front() = *itForLastElement;
-	m_heap.erase(itForLastElement);
-	m_nodesForDeleteUpdate.push_back(0);
-	while (!m_nodesForDeleteUpdate.empty())
-	{
-		int reassignResult = reassign_items_for_current_and_child_nodes(m_nodesForDeleteUpdate.front());
-		m_nodesForDeleteUpdate.erase(m_nodesForDeleteUpdate.begin());
-		if (reassignResult != -1)
-			m_nodesForDeleteUpdate.push_back(reassignResult);
-	}
-
-	return minKey;
 }
