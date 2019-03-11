@@ -4,20 +4,25 @@
 #include <thrust/swap.h>
 
 
+
+
 ////////////////////////////////////////////////////////////////////
 // TO DO 190306 - Refer this page, make it possible to use vector in kernel
 // https://gist.github.com/docwhite/843f17e33e4c1f2b531a14a4bdfe90ec
 ////////////////////////////////////////////////////////////////////
 
 
+
 void ParallelHeapManager::push(const double& entity)
 {
-	int destinationIndex = m_heap.size() + m_insertUpdateBuffer_oddLevel.size()+ m_insertUpdateBuffer_evenLevel.size();
+	//It is guaranteed that there is no pop operation until every item is inserted
+	//int destinationIndex = m_heap.size() + m_insertUpdateBuffer_oddLevel.size()+ m_insertUpdateBuffer_evenLevel.size();
 	InsertItem item;
 	item.currNode = 0;
-	item.destination = destinationIndex;
+	item.destination = m_heap.size();
 	item.entity = entity;
 	m_insertUpdateBuffer_evenLevel.push_back(item);
+	m_heap.push_back(INT_MAX);
 }
 
 
@@ -25,8 +30,11 @@ void ParallelHeapManager::push(const double& entity)
 double ParallelHeapManager::pop()
 {
 	double topEntity = m_heap.front();
-	fetch_last_entity<<<1, 1 >>>(m_heap, m_deleteUpdateBuffer_evenLevel);
-	cudaDeviceSynchronize();
+	
+	m_deleteUpdateBuffer_evenLevel.push_back(0);
+	m_heap.front() == m_heap.back();
+	m_heap.pop_back();
+
 	return topEntity;
 }
 
@@ -34,12 +42,22 @@ double ParallelHeapManager::pop()
 
 void ParallelHeapManager::initiate_delete_update(const bool& isOdd)
 {
+	double* heapPtr = raw_pointer_cast(m_heap.data());
+	int* tempBuffer_device, *tempBuffer_host;
+	int bufferSize = 0;
+
 	if (isOdd)
 	{
 		if (!m_deleteUpdateBuffer_oddLevel.empty())
 		{
-			delete_update <<<N, N >>> (m_heap, m_deleteUpdateBuffer_oddLevel, m_deleteUpdateBuffer_evenLevel);
+			bufferSize = m_deleteUpdateBuffer_oddLevel.size();
+			int* deleteUpdateBufferPtr_odd = raw_pointer_cast(m_deleteUpdateBuffer_oddLevel.data());
+			cudaMalloc((void**)&tempBuffer_device, sizeof(int)*bufferSize);
+
+			delete_update <<<N, N >>>(heapPtr, m_heap.size(), 
+				deleteUpdateBufferPtr_odd, bufferSize, tempBuffer_device);
 			cudaDeviceSynchronize();
+
 			m_deleteUpdateBuffer_oddLevel.clear();
 		}
 	}
@@ -47,10 +65,47 @@ void ParallelHeapManager::initiate_delete_update(const bool& isOdd)
 	{
 		if (!m_deleteUpdateBuffer_evenLevel.empty())
 		{
-			delete_update <<<N, N >>> (m_heap, m_deleteUpdateBuffer_evenLevel, m_deleteUpdateBuffer_oddLevel);
+			bufferSize = m_deleteUpdateBuffer_evenLevel.size();
+			int* deleteUpdateBufferPtr_even = raw_pointer_cast(m_deleteUpdateBuffer_evenLevel.data());
+			cudaMalloc((void**)&tempBuffer_device, sizeof(int)*bufferSize);
+
+			delete_update <<<N, N >>>(heapPtr, m_heap.size(),
+				deleteUpdateBufferPtr_even, bufferSize, tempBuffer_device);
 			cudaDeviceSynchronize();
 			m_deleteUpdateBuffer_evenLevel.clear();
 		}
+	}
+
+	if (bufferSize > 0)
+	{
+		tempBuffer_host = new int[bufferSize];
+		cudaMemcpy(tempBuffer_device, tempBuffer_host, bufferSize * sizeof(int), cudaMemcpyDeviceToHost);
+		cudaFree(tempBuffer_device);
+
+		transfer_delete_buffer_info(tempBuffer_host, bufferSize, isOdd);
+		delete[] tempBuffer_host;
+	}
+}
+
+
+
+void ParallelHeapManager::transfer_delete_buffer_info(int* tempBuffer_host, int bufferSize, bool isOdd)
+{
+	host_vector<int> bufferInfo;
+
+	for (int i = 0; i < bufferSize; i++)
+	{
+		if (tempBuffer_host[i] != -1)
+			bufferInfo.push_back(tempBuffer_host[i]);
+	}
+
+	if (isOdd)
+	{
+		copy(bufferInfo.begin(), bufferInfo.end(), m_deleteUpdateBuffer_evenLevel.end());
+	}
+	else
+	{
+		copy(bufferInfo.begin(), bufferInfo.end(), m_deleteUpdateBuffer_oddLevel.end());
 	}
 }
 
@@ -58,11 +113,21 @@ void ParallelHeapManager::initiate_delete_update(const bool& isOdd)
 
 void ParallelHeapManager::initiate_insert_update(const bool& isOdd)
 {
+	double* heapPtr = raw_pointer_cast(m_heap.data());
+	InsertItem* tempBuffer_device, *tempBuffer_host;
+	int bufferSize = 0;
+
 	if (isOdd)
 	{
 		if (!m_insertUpdateBuffer_oddLevel.empty())
 		{
-			insert_update <<<N, N >>> (m_heap, m_insertUpdateBuffer_oddLevel, m_insertUpdateBuffer_evenLevel);
+			bufferSize = m_insertUpdateBuffer_oddLevel.size();
+			InsertItem* insertUpdateBufferPtr_odd = raw_pointer_cast(m_insertUpdateBuffer_oddLevel.data());
+			cudaMalloc((void**)&tempBuffer_device, sizeof(InsertItem)*bufferSize);
+
+			insert_update << <N, N >> > (heapPtr, m_heap.size(),
+				insertUpdateBufferPtr_odd, bufferSize, tempBuffer_device);
+
 			cudaDeviceSynchronize();
 			m_insertUpdateBuffer_oddLevel.clear();
 		}
@@ -71,79 +136,109 @@ void ParallelHeapManager::initiate_insert_update(const bool& isOdd)
 	{
 		if (!m_insertUpdateBuffer_evenLevel.empty())
 		{
-			insert_update << <N, N >> > (m_heap, m_insertUpdateBuffer_evenLevel, m_insertUpdateBuffer_oddLevel);
+			bufferSize = m_insertUpdateBuffer_evenLevel.size();
+			InsertItem* insertUpdateBufferPtr_even = raw_pointer_cast(m_insertUpdateBuffer_evenLevel.data());
+			cudaMalloc((void**)&tempBuffer_device, sizeof(InsertItem)*bufferSize);
+
+			insert_update << <N, N >> > (heapPtr, m_heap.size(),
+				insertUpdateBufferPtr_even, bufferSize, tempBuffer_device);
+
 			cudaDeviceSynchronize();
 			m_insertUpdateBuffer_evenLevel.clear();
 		}
 	}
+
+	if (bufferSize > 0)
+	{
+		tempBuffer_host = new InsertItem[bufferSize];
+		cudaMemcpy(tempBuffer_device, tempBuffer_host, bufferSize * sizeof(InsertItem), cudaMemcpyDeviceToHost);
+		cudaFree(tempBuffer_device);
+
+		transfer_insert_buffer_info(tempBuffer_host, bufferSize, isOdd);
+		delete[] tempBuffer_host;
+	}
 }
 
 
 
-__global__ void fetch_last_entity(device_vector<double>& heap, device_vector<int>& deleteUpdateBuffer_evenLevel)
+void ParallelHeapManager::transfer_insert_buffer_info(InsertItem* tempBuffer_host, int bufferSize, bool isOdd)
 {
-	if (heap.size() > 1)
+	host_vector<InsertItem> bufferInfo;
+
+	for (int i = 0; i < bufferSize; i++)
 	{
-		deleteUpdateBuffer_evenLevel.push_back(0);
-		heap.front() == heap.back();
-		heap.pop_back();
+		if (tempBuffer_host[i].currNode != -1)
+			bufferInfo.push_back(tempBuffer_host[i]);
+	}
+
+	if (isOdd)
+	{
+		copy(bufferInfo.begin(), bufferInfo.end(), m_insertUpdateBuffer_evenLevel.end());
 	}
 	else
 	{
-		//Do nothing
+		copy(bufferInfo.begin(), bufferInfo.end(), m_insertUpdateBuffer_oddLevel.end());
 	}
 }
 
 
 
-__global__ void delete_update(device_vector<double>& heap, device_vector<int>& deleteUpdateBuffer_currentLevel, device_vector<int>& deleteUpdateBuffer_nextLevel)
+__global__ void delete_update(double* heapPtr, int heapSize,
+	int* deleteUpdateBufferPtr_current, int deleteUpdateBufferSize
+	, int* deleteUpdateBufferPtr_next)
 {
 	int tid = threadIdx.x + blockIdx.x*blockDim.x;
-	while (tid < deleteUpdateBuffer_currentLevel.size())
+	while (tid < deleteUpdateBufferSize)
 	{
-		int currIndex = deleteUpdateBuffer_currentLevel[tid];
-		if (currIndex < heap.size())
+		int currIndex = deleteUpdateBufferPtr_current[tid];
+		deleteUpdateBufferPtr_next[tid] = -1;
+		if (currIndex < heapSize)
 		{
 			int leftIndex = 2 * currIndex + 1;
 			int rightIndex = 2 * currIndex + 2;
-			if (leftIndex < heap.size())
+			if (leftIndex < heapSize)
 			{
-				if (rightIndex < heap.size())
+				if (rightIndex < heapSize)
 				{
 					//All three nodes exist.
-					device_vector<double> buffer;
-					buffer.push_back(heap[currIndex]);
-					buffer.push_back(heap[leftIndex]);
-					buffer.push_back(heap[rightIndex]);
+					double* sortingBuffer;
+					cudaMalloc((void**)&sortingBuffer, 3 * sizeof(double));
+					sortingBuffer[0] = heapPtr[currIndex];
+					sortingBuffer[1] = heapPtr[leftIndex];
+					sortingBuffer[2] = heapPtr[rightIndex];
 
-					sort(buffer.begin(), buffer.end());
-
-					heap[currIndex] = buffer[0];
-					if (heap[leftIndex] < heap[rightIndex])
+					sort_three_entities(sortingBuffer);
+					
+					heapPtr[currIndex] = sortingBuffer[0];
+					if (heapPtr[leftIndex] < heapPtr[rightIndex])
 					{
-						heap[leftIndex] = buffer[2];
-						heap[rightIndex] = buffer[1];
-						deleteUpdateBuffer_nextLevel.push_back(leftIndex);
+						heapPtr[leftIndex] = sortingBuffer[2];
+						heapPtr[rightIndex] = sortingBuffer[1];
+						deleteUpdateBufferPtr_next[tid] = leftIndex;
 					}
 					else
 					{
-						heap[leftIndex] = buffer[1];
-						heap[rightIndex] = buffer[2];
-						deleteUpdateBuffer_nextLevel.push_back(rightIndex);
+						heapPtr[leftIndex] = sortingBuffer[1];
+						heapPtr[rightIndex] = sortingBuffer[2];
+						deleteUpdateBufferPtr_next[tid] = rightIndex;
 					}
+
+					cudaFree(sortingBuffer);
 				}
 				else
 				{
 					//Only left node exists.
-					if (heap[currIndex] > heap[leftIndex])
+					if (heapPtr[currIndex] > heapPtr[leftIndex])
 					{
-						swap(heap[currIndex], heap[leftIndex]);
+						double temp = heapPtr[currIndex];
+						heapPtr[currIndex] = heapPtr[rightIndex];
+						heapPtr[rightIndex] = temp;
 					}
 				}
 			}
 			else
 			{
-				//Only current node exists.
+				//Only current node exists.british highlander
 				//Do nothing
 			}
 		}
@@ -153,35 +248,65 @@ __global__ void delete_update(device_vector<double>& heap, device_vector<int>& d
 
 
 
-__global__ void insert_update(device_vector<double>& heap, 
-	device_vector<InsertItem>& insertUpdateBuffer_currentLevel,
-	device_vector<InsertItem>& insertUpdateBuffer_nextLevel)
+__device__ void sort_three_entities(double* entities)
+{
+	if (entities[0] > entities[2])
+	{
+		double temp = entities[0];
+		entities[0] = entities[2];
+		entities[2] = temp;
+	}
+
+	if (entities[0] > entities[1])
+	{
+		double temp = entities[0];
+		entities[0] = entities[1];
+		entities[1] = temp;
+	}
+	
+	if (entities[1] > entities[2])
+	{
+		double temp = entities[1];
+		entities[1] = entities[2];
+		entities[2] = temp;
+	}
+}
+
+
+
+__global__ void insert_update(double* heapPtr, int heapSize,
+	InsertItem* insertUpdateBufferPtr_current, int insertUpdateBufferSize
+	, InsertItem* insertUpdateBufferPtr_next)
 {
 	int tid = threadIdx.x + blockIdx.x*blockDim.x;
-	while (tid < insertUpdateBuffer_currentLevel.size())
+	while (tid < insertUpdateBufferSize)
 	{
-		InsertItem currItem = insertUpdateBuffer_currentLevel[tid];
+		InsertItem currItem = insertUpdateBufferPtr_current[tid];
 
 		if (currItem.currNode == currItem.destination)
 		{
-			if (heap.size() <= currItem.destination)
-				heap.resize(currItem.destination + 1);
+			//if (heapSize <= currItem.destination)
+			//	heap.resize(currItem.destination + 1);
 
-			heap[currItem.destination] = currItem.entity;
+			heapPtr[currItem.destination] = currItem.entity;
+
+			InsertItem dummyItem;
+			dummyItem.destination = -1;
+			insertUpdateBufferPtr_next[tid] = dummyItem;
 		}
 		else
 		{
 			double entityForNextLevel = currItem.entity;
-			if (heap[currItem.currNode] > entityForNextLevel)
+			if (heapPtr[currItem.currNode] > entityForNextLevel)
 			{
-				entityForNextLevel = heap[currItem.currNode];
-				heap[currItem.currNode] = currItem.entity;
+				entityForNextLevel = heapPtr[currItem.currNode];
+				heapPtr[currItem.currNode] = currItem.entity;
 			}
 
 			int levelOfTargetNode = calculate_node_level(currItem.destination);
 			int levelOfCurrNode = calculate_node_level(currItem.currNode);
 			bool goLeft = is_index_bit_in_number_zero(currItem.destination + 1, (levelOfTargetNode - levelOfCurrNode));
-			
+
 			InsertItem nextItem;
 			nextItem.destination = currItem.destination;
 			nextItem.entity = entityForNextLevel;
@@ -190,7 +315,7 @@ __global__ void insert_update(device_vector<double>& heap,
 			else
 				nextItem.currNode = 2 * currItem.currNode + 2;
 
-			insertUpdateBuffer_nextLevel.push_back(nextItem);
+			insertUpdateBufferPtr_next[tid] = nextItem;
 		}
 		tid += N;
 	}

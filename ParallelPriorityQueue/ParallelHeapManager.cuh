@@ -1,6 +1,6 @@
 #pragma once
 #include <thrust/device_vector.h>
-#include <thrust/tuple.h>
+#include <thrust/host_vector.h>
 #include <vector>
 #include <tuple>
 
@@ -38,17 +38,22 @@ public:
 	inline bool isDeleteUpdateEmpty_even() const { return m_deleteUpdateBuffer_evenLevel.empty(); }
 
 	void initiate_delete_update(const bool& isOdd);
+	void transfer_delete_buffer_info(int* tempBuffer_host, int bufferSize, bool isOdd);
+
 	void initiate_insert_update(const bool& isOdd);
+	void transfer_insert_buffer_info(InsertItem* tempBuffer_host, int bufferSize, bool isOdd);
 };
 
-__global__ void fetch_last_entity(device_vector<double>& heap, device_vector<int>& deleteUpdateBuffer_evenLevel);
-__global__ void delete_update(device_vector<double>& heap, device_vector<int>& deleteUpdateBuffer_currentLevel, device_vector<int>& deleteUpdateBuffer_nextLevel);
-__global__ void insert_update(device_vector<double>& heap, device_vector<InsertItem>& insertUpdateBuffer_currentLevel,
-														device_vector<InsertItem>& insertUpdateBuffer_nextLevel);
+__global__ void delete_update(double* heapPtr, int heapSize, 
+	int* deleteUpdateBufferPtr_current, int bufferSize
+	, int* deleteUpdateBufferPtr_next);
+
+__device__ void sort_three_entities(double* entities);
+
+
+__global__ void insert_update(double* heapPtr, int heapSize,
+	InsertItem* insertUpdateBufferPtr_current, int bufferSize
+	, InsertItem* insertUpdateBufferPtr_next);
 
 __device__ int calculate_node_level(int nodeIndex);
 __device__ bool is_index_bit_in_number_zero(int number, int index);
-
-__device__ void insert_update();
-__device__ void delete_update();
-	
