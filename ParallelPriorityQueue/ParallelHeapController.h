@@ -4,8 +4,9 @@
 #include <list>
 #include <future>
 #include <thread>
+#include <atomic>
 #include "constForParallelHeap.h"
-#include "ParallelHeapManager.cuh"
+#include "ParallelHeapManager.h"
 
 using namespace std;
 
@@ -15,21 +16,24 @@ class ParallelHeapController
 	ParallelHeapManager m_parallelHeap;
 
 	list<PPQ_COMMAND> m_commandQ;
-	list<double> m_pushEntityQ;
+	list<float> m_pushEntityQ;
+
+	thread* m_thread = nullptr;
 	mutex m_commandLock;
 	mutex m_popLock;
 
-	promise<double> m_minKey;
-	promise<bool> m_commandProcessStatus;
+	promise<float> m_minKey;
+	atomic_bool m_commandProcessStatus = false;
 
 public:
-	ParallelHeapController() = default;
+	ParallelHeapController() { initiate_loop(); }
 	~ParallelHeapController() = default;
 
-	void request_push(list<double>& entities);
+	void request_push(list<float>& entities);
 	double request_pop();
 
-	void initiate_command_process_thread();
+	void initiate_loop();
+	void kill_loop();
 	void process_commands();
 };
 

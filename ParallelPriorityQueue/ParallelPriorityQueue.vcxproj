@@ -56,7 +56,8 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <Include>..\..\thrust\thrust;%(Include)</Include>
+      <Include>%(Include)</Include>
+      <GenerateRelocatableDeviceCode>false</GenerateRelocatableDeviceCode>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -76,20 +77,21 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
-      <Include>..\..\thrust\thrust;%(Include)</Include>
+      <Include>%(Include)</Include>
+      <GenerateRelocatableDeviceCode>false</GenerateRelocatableDeviceCode>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <CudaCompile Include="ParallelHeapManager.cu" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="constForParallelHeap.h" />
     <ClInclude Include="ParallelHeapController.h" />
-    <ClInclude Include="ParallelHeapManager.cuh" />
+    <ClInclude Include="ParallelHeapManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="mayn.cpp" />
     <ClCompile Include="ParallelHeapController.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="ParallelHeapManager.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
