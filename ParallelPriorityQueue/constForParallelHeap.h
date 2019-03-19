@@ -1,8 +1,10 @@
 #pragma once
 
-#define NT 100
+#define NT 32
 
 enum PPQ_COMMAND 
 {PPQ_POP, PPQ_PUSH, PPQ_UPDATE, PPQ_EXIT};
 
 const int INITIAL_HEAP_CAPACITY = 100;
+
+//#define PRINT_PROGRESS
