@@ -30,8 +30,11 @@ private:
 	int m_heapSize;
 	int m_heapCapacity;
 
+#ifdef USE_PINNED_BUFFER_CHECK
+	bool* m_bInsertUpdateBufferEmpty;
+	bool* m_bDeleteUpdateBufferEmpty;
+#endif
 
-	
 	/*device_vector<InsertItem> m_insertUpdateBuffer_oddLevel;
 	device_vector<InsertItem> m_insertUpdateBuffer_evenLevel;
 	device_vector<int> m_deleteUpdateBuffer_oddLevel;

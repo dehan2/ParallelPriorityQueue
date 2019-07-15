@@ -29,7 +29,6 @@ __device__ bool is_index_bit_in_number_zero(int number, int index);
 __device__ int calculate_assigned_node_index(int num, bool isOdd);
 
 
-
 ParallelHeapManager::ParallelHeapManager()
 	: m_heapSize(0), m_heapCapacity(INITIAL_HEAP_CAPACITY)
 	//m_heap(m_heapCapacity), m_deleteUpdateBuffer(m_heapCapacity), m_insertUpdateBuffer(m_heapCapacity)
@@ -39,6 +38,11 @@ ParallelHeapManager::ParallelHeapManager()
 	m_insertUpdateBuffer.resize(m_heapCapacity);
 
 	initialize_heap_and_buffer();
+	
+#ifdef USE_PINNED_BUFFER_CHECK
+	cudaHostAlloc((void**)&m_bInsertUpdateBufferEmpty, sizeof(bool), cudaHostAllocMapped);
+	cudaHostAlloc((void**)&m_bDeleteUpdateBufferEmpty, sizeof(bool), cudaHostAllocMapped);
+#endif
 }
 
 
@@ -140,11 +144,23 @@ __global__ void post_process_for_push(float* heapPtr, InsertItem2* insertUpdateB
 __global__ void delete_update2(float* heapPtr, int heapSize, bool* deleteUpdateBufferPtr, bool isOdd)
 {
 	int tid = threadIdx.x + blockIdx.x*blockDim.x;
+
+	//clock_t start_time = clock();
 	int currIndex = calculate_assigned_node_index(tid, isOdd);
+	//clock_t stop_time = clock();
+	//int cycle1 = (int)(stop_time - start_time);
+
+	//int cycle2 = 0;
+	//int cycle3 = 0;
 
 	while (currIndex < heapSize)
 	{
-		if (deleteUpdateBufferPtr[currIndex] == true)
+		//start_time = clock();
+		bool bNeedUpdate = deleteUpdateBufferPtr[currIndex];
+		//stop_time = clock();
+		//cycle2 += (int)(stop_time - start_time);
+
+		if (bNeedUpdate == true)
 		{
 			//printf("Delete update: [%d, %f]\n", currIndex, heapPtr[currIndex]);
 			int leftIndex = 2 * currIndex + 1;
@@ -191,8 +207,14 @@ __global__ void delete_update2(float* heapPtr, int heapSize, bool* deleteUpdateB
 			deleteUpdateBufferPtr[currIndex] = false;
 		}
 		tid += NT;
+
+		//start_time = clock();
 		currIndex = calculate_assigned_node_index(tid, isOdd);
+		//stop_time = clock();
+		//cycle3 += (int)(stop_time - start_time);
 	}
+
+	//printf("Delete update time: %d, %d, %d\n", cycle1, cycle2, cycle3);
 }
 
 
@@ -299,7 +321,7 @@ __device__ int calculate_node_level(int nodeIndex)
 
 	while (nodeIndex > maxLevelIndex)
 	{
-		powerOfTwo *= 2;
+		powerOfTwo = (powerOfTwo<<1); //powerOfTwo *= 2;
 		maxLevelIndex += powerOfTwo;
 		level++;
 	}
@@ -317,6 +339,7 @@ __device__ bool is_index_bit_in_number_zero(int number, int index)
 }
 
 
+
 //Frontline 190318 - ¿Ï¼ºÇÏÀð!
 __device__ int calculate_assigned_node_index(int num, bool isOdd)
 {
@@ -325,17 +348,18 @@ __device__ int calculate_assigned_node_index(int num, bool isOdd)
 	if (isOdd)
 		level = 1;
 
-	int numEntity = powf(2, level);
+	int numEntity = 1<<level; //pow(2, level)
+
 	while (num > numEntity)
 	{
 		level += 2;
-		numEntity += powf(2, level);
+		numEntity += 1 << level; //pow(2, level)
 	}
 	
 	int lastIndex = 0;
 	for (int i = 1; i <= level; i++)
 	{
-		lastIndex += powf(2, i);
+		lastIndex += 1 << i; //pow(2, i)
 	}
 	int targetIndex = lastIndex - numEntity + num;
 	
@@ -345,19 +369,20 @@ __device__ int calculate_assigned_node_index(int num, bool isOdd)
 }
 
 
-__device__ bool d_isDeleteUpdateBufferEmpty;
 
-__device__ bool d_isInsertUpdateBufferEmpty;
+//__device__ bool d_isDeleteUpdateBufferEmpty;
+
+//__device__ bool d_isInsertUpdateBufferEmpty;
 
 
-__global__ void check_delete_update_buffer_empty(bool* deleteUpdateBufferPtr, int heapSize)
+__global__ void check_delete_update_buffer_empty(bool* deleteUpdateBufferPtr, int heapSize, bool* result)
 {
-	d_isDeleteUpdateBufferEmpty = true;
+	*result = true;
 	for (int i = 0; i < heapSize; i++)
 	{
 		if (deleteUpdateBufferPtr[i] == true)
 		{
-			d_isDeleteUpdateBufferEmpty = false;
+			*result = false;
 			break;
 		}
 	}
@@ -365,16 +390,15 @@ __global__ void check_delete_update_buffer_empty(bool* deleteUpdateBufferPtr, in
 
 
 
-__global__ void check_insert_update_buffer_empty(InsertItem2* insertUpdateBufferPtr, int heapSize)
+__global__ void check_insert_update_buffer_empty(InsertItem2* insertUpdateBufferPtr, int heapSize, bool* result)
 {
-	//printf("Checking insert update buffer...\n");
-	d_isInsertUpdateBufferEmpty = true;
+	*result = true;
 	for (int i = 0; i < heapSize; i++)
 	{
 		if (insertUpdateBufferPtr[i].destination >= 0)
 		{
 			//printf("Insert buffer is not empty:[%d, %d, %f]\n", i, insertUpdateBufferPtr[i].destination, insertUpdateBufferPtr[i].entity);
-			d_isInsertUpdateBufferEmpty = false;
+			*result = false;
 			break;
 		}
 	}
@@ -385,12 +409,29 @@ __global__ void check_insert_update_buffer_empty(InsertItem2* insertUpdateBuffer
 bool ParallelHeapManager::is_delete_update_buffer_empty()
 {
 	bool*  deleteUpdateBufPtr = raw_pointer_cast(m_deleteUpdateBuffer.data());
-	check_delete_update_buffer_empty<<<1,1>>>(deleteUpdateBufPtr, m_heapSize);
-	//cudaDeviceSynchronize();
+	bool* d_result;
 
-	bool isDeleteUpdateBufferEmpty = false;
-	cudaMemcpyFromSymbol(&isDeleteUpdateBufferEmpty, d_isDeleteUpdateBufferEmpty, sizeof(d_isDeleteUpdateBufferEmpty), 0, cudaMemcpyDeviceToHost);
-	return isDeleteUpdateBufferEmpty;
+#ifndef USE_PINNED_BUFFER_CHECK
+	bool h_result;
+	cudaMalloc(&d_result, sizeof(bool));
+	check_delete_update_buffer_empty<<<1, 1>>>(deleteUpdateBufPtr, m_heapSize, d_result);
+	//cudaDeviceSynchronize();
+	
+	cudaMemcpy(&h_result, d_result, sizeof(bool), cudaMemcpyDeviceToHost);
+	cudaFree(d_result);
+	return h_result;
+#else
+	cudaHostGetDevicePointer((void**)&d_result, (void*)m_bDeleteUpdateBufferEmpty, 0);
+	check_delete_update_buffer_empty << <1, 1 >> > (deleteUpdateBufPtr, m_heapSize, d_result);
+
+	return *m_bDeleteUpdateBufferEmpty;
+#endif
+
+	//bool isDeleteUpdateBufferEmpty = false;
+	//cudaMemcpyFromSymbol(&isDeleteUpdateBufferEmpty, d_isDeleteUpdateBufferEmpty, sizeof(d_isDeleteUpdateBufferEmpty), 0, cudaMemcpyDeviceToHost);
+	//return isDeleteUpdateBufferEmpty;
+
+	
 }
 
 
@@ -399,12 +440,27 @@ bool ParallelHeapManager::is_delete_update_buffer_empty()
 bool ParallelHeapManager::is_insert_update_buffer_empty()
 {
 	InsertItem2* insertUpdateBufPtr = raw_pointer_cast(m_insertUpdateBuffer.data());
-	check_insert_update_buffer_empty<<<1,1>>>(insertUpdateBufPtr, m_heapSize);
+	bool* d_result;
+
+#ifndef USE_PINNED_BUFFER_CHECK
+	bool h_result;
+	cudaMalloc(&d_result, sizeof(bool));
+	check_insert_update_buffer_empty<<<1,1>>>(insertUpdateBufPtr, m_heapSize, d_result);
 	//cudaDeviceSynchronize();
 
-	bool isInsertUpdateBufferEmpty = false;
-	cudaMemcpyFromSymbol(&isInsertUpdateBufferEmpty, d_isInsertUpdateBufferEmpty, sizeof(d_isInsertUpdateBufferEmpty), 0, cudaMemcpyDeviceToHost);
-	return isInsertUpdateBufferEmpty;
+	cudaMemcpy(&h_result, d_result, sizeof(bool), cudaMemcpyDeviceToHost);
+	cudaFree(d_result);
+	return h_result;
+#else
+	cudaHostGetDevicePointer((void**)&d_result, (void*)m_bInsertUpdateBufferEmpty, 0);
+	check_insert_update_buffer_empty << <1, 1 >> > (insertUpdateBufPtr, m_heapSize, d_result);
+
+	return *m_bInsertUpdateBufferEmpty;
+#endif
+
+	//bool isInsertUpdateBufferEmpty = false;
+	//cudaMemcpyFromSymbol(&isInsertUpdateBufferEmpty, d_isInsertUpdateBufferEmpty, sizeof(d_isInsertUpdateBufferEmpty), 0, cudaMemcpyDeviceToHost);
+	//return isInsertUpdateBufferEmpty;
 }
 
 

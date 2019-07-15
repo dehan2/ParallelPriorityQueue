@@ -35,5 +35,7 @@ public:
 	void initiate_loop();
 	void kill_loop();
 	void process_commands();
+
+	void process_commands2();
 };
 

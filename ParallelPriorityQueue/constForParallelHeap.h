@@ -7,4 +7,6 @@ enum PPQ_COMMAND
 
 const int INITIAL_HEAP_CAPACITY = 100;
 
+#define USE_PINNED_BUFFER_CHECK
+
 //#define PRINT_PROGRESS
